@@ -1,0 +1,30 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RejoinTime = 2 -- Tiempo de espera en segundos
+local TeleportService = game:GetService("TeleportService")
+local Players = game:GetService("Players")
+
+-- Función para disparar el evento FireServer varias veces
+for i = 1, 200 do
+    ReplicatedStorage:WaitForChild("Guide"):FireServer()
+end
+
+-- Función para reingresar al juego
+local function rejoinGame()
+    local player = Players.LocalPlayer
+    if player then
+        print("Rejoining Server, Please Wait...") -- Mensaje en la consola
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player)
+    end
+end
+
+-- Reingreso automático después de morir
+Players.LocalPlayer.CharacterAdded:Connect(function(character)
+    character:WaitForChild("Humanoid").Died:Connect(function()
+        wait(RejoinTime)
+        rejoinGame()
+    end)
+end)
+
+print("Script Loaded Successfully!") -- Mensaje en la consola
+wait(RejoinTime)
+rejoinGame()
