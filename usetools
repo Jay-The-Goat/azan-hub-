@@ -1,1 +1,424 @@
-5
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+
+-- GUI Setup
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "SpamToolsGui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = CoreGui
+
+local Container = Instance.new("Frame")
+Container.Name = "Container"
+Container.Size = UDim2.new(0, 180, 0, 44)
+Container.Position = UDim2.new(1, -15, 0.5, -22)
+Container.AnchorPoint = Vector2.new(1, 0.5)
+Container.BackgroundTransparency = 1
+Container.Parent = ScreenGui
+
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Name = "ToggleBtn"
+ToggleBtn.Size = UDim2.new(1, -30, 1, 0)
+ToggleBtn.Position = UDim2.new(0, 0, 0, 0)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(20, 15, 30)
+ToggleBtn.BorderColor3 = Color3.fromRGB(160, 32, 240)
+ToggleBtn.BorderSizePixel = 1
+ToggleBtn.Text = "Spam tools off"
+ToggleBtn.TextColor3 = Color3.fromRGB(220, 220, 220)
+ToggleBtn.Font = Enum.Font.Code
+ToggleBtn.TextSize = 14
+ToggleBtn.AutoButtonColor = false
+ToggleBtn.Parent = Container
+
+local ToggleCorner = Instance.new("UICorner")
+ToggleCorner.CornerRadius = UDim.new(0, 5)
+ToggleCorner.Parent = ToggleBtn
+
+local DropdownArrowBtn = Instance.new("TextButton")
+DropdownArrowBtn.Name = "DropdownArrowBtn"
+DropdownArrowBtn.Size = UDim2.new(0, 26, 1, 0)
+DropdownArrowBtn.Position = UDim2.new(1, -26, 0, 0)
+DropdownArrowBtn.BackgroundColor3 = Color3.fromRGB(20, 15, 30)
+DropdownArrowBtn.BorderColor3 = Color3.fromRGB(160, 32, 240)
+DropdownArrowBtn.BorderSizePixel = 1
+DropdownArrowBtn.Text = "v"
+DropdownArrowBtn.TextColor3 = Color3.fromRGB(220, 220, 220)
+DropdownArrowBtn.Font = Enum.Font.Code
+DropdownArrowBtn.TextSize = 14
+DropdownArrowBtn.AutoButtonColor = false
+DropdownArrowBtn.Parent = Container
+
+local ArrowCorner = Instance.new("UICorner")
+ArrowCorner.CornerRadius = UDim.new(0, 5)
+ArrowCorner.Parent = DropdownArrowBtn
+
+-- Draggable implementation attached to the buttons so they control the Container
+local function makeDraggable(frame, handle)
+	local dragging, dragInput, dragStart, startPos
+	
+	handle.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = frame.Position
+			
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragging = false
+				end
+			end)
+		end
+	end)
+
+	handle.InputChanged:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+			dragInput = input
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if input == dragInput and dragging then
+			local delta = input.Position - dragStart
+			frame.Position = UDim2.new(
+				startPos.X.Scale, 
+				startPos.X.Offset + delta.X, 
+				startPos.Y.Scale, 
+				startPos.Y.Offset + delta.Y
+			)
+		end
+	end)
+end
+
+makeDraggable(Container, ToggleBtn)
+makeDraggable(Container, DropdownArrowBtn)
+
+-- Dropdown Frame Wrapper
+local DropdownFrame = Instance.new("Frame")
+DropdownFrame.Name = "DropdownFrame"
+DropdownFrame.Size = UDim2.new(1, 0, 0, 0)
+DropdownFrame.Position = UDim2.new(0, 0, 1, 5)
+DropdownFrame.BackgroundColor3 = Color3.fromRGB(20, 15, 30)
+DropdownFrame.BorderColor3 = Color3.fromRGB(160, 32, 240)
+DropdownFrame.BorderSizePixel = 1
+DropdownFrame.ClipsDescendants = true
+DropdownFrame.Visible = false
+DropdownFrame.Parent = Container
+
+local DropdownCorner = Instance.new("UICorner")
+DropdownCorner.CornerRadius = UDim.new(0, 5)
+DropdownCorner.Parent = DropdownFrame
+
+local ScrollFrame = Instance.new("ScrollingFrame")
+ScrollFrame.Name = "ScrollFrame"
+ScrollFrame.Size = UDim2.new(1, -4, 1, -4)
+ScrollFrame.Position = UDim2.new(0, 2, 0, 2)
+ScrollFrame.BackgroundTransparency = 1
+ScrollFrame.BorderSizePixel = 0
+ScrollFrame.ScrollBarThickness = 3
+ScrollFrame.ScrollBarImageColor3 = Color3.fromRGB(160, 32, 240)
+ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+ScrollFrame.Parent = DropdownFrame
+
+local UIList = Instance.new("UIListLayout")
+UIList.Parent = ScrollFrame
+UIList.SortOrder = Enum.SortOrder.LayoutOrder
+UIList.Padding = UDim.new(0, 3)
+
+UIList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, UIList.AbsoluteContentSize.Y + 6)
+end)
+
+-- State
+local active = false
+local menuOpen = false
+local selectedToolName = "All"
+local loopConn
+
+local function unequipAllTools()
+	local char = player.Character
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	
+	if char and backpack then
+		for _, tool in ipairs(char:GetChildren()) do
+			if tool:IsA("Tool") then
+				tool.Parent = backpack
+			end
+		end
+	end
+end
+
+local function equipAndActivate()
+	if not active then return end
+	
+	local char = player.Character
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	if not char or not backpack then return end
+
+	if selectedToolName == "All" then
+		for _, tool in ipairs(backpack:GetChildren()) do
+			if tool:IsA("Tool") then
+				tool.Parent = char
+			end
+		end
+
+		for _, tool in ipairs(char:GetChildren()) do
+			if tool:IsA("Tool") then
+				task.spawn(pcall, tool.Activate, tool)
+			end
+		end
+	else
+		for _, tool in ipairs(char:GetChildren()) do
+			if tool:IsA("Tool") and tool.Name ~= selectedToolName then
+				tool.Parent = backpack
+			end
+		end
+
+		local targetTool = backpack:FindFirstChild(selectedToolName) or char:FindFirstChild(selectedToolName)
+		if targetTool then
+			if targetTool.Parent ~= char then
+				targetTool.Parent = char
+			end
+			task.spawn(pcall, targetTool.Activate, targetTool)
+		end
+	end
+end
+
+local function refreshDropdownList()
+	for _, child in ipairs(ScrollFrame:GetChildren()) do
+		if child:IsA("TextButton") then
+			child:Destroy()
+		end
+	end
+
+	local toolsFound = {"All Tools"}
+
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	if backpack then
+		for _, tool in ipairs(backpack:GetChildren()) do
+			if tool:IsA("Tool") and not table.find(toolsFound, tool.Name) then
+				table.insert(toolsFound, tool.Name)
+			end
+		end
+	end
+
+	local char = player.Character
+	if char then
+		for _, tool in ipairs(char:GetChildren()) do
+			if tool:IsA("Tool") and not table.find(toolsFound, tool.Name) then
+				table.insert(toolsFound, tool.Name)
+			end
+		end
+	end
+
+	for _, name in ipairs(toolsFound) do
+		local btn = Instance.new("TextButton")
+		btn.Name = name
+		btn.Size = UDim2.new(1, -6, 0, 26)
+		btn.BackgroundColor3 = Color3.fromRGB(30, 20, 45)
+		btn.BorderColor3 = Color3.fromRGB(100, 30, 150)
+		btn.BorderSizePixel = 1
+		btn.Text = name
+		
+		local isSelected = (name == "All Tools" and selectedToolName == "All") or (name == selectedToolName)
+		btn.TextColor3 = isSelected and Color3.fromRGB(200, 100, 255) or Color3.fromRGB(200, 200, 200)
+		btn.Font = Enum.Font.Code
+		btn.TextSize = 12
+		btn.Parent = ScrollFrame
+
+		local btnCorner = Instance.new("UICorner")
+		btnCorner.CornerRadius = UDim.new(0, 4)
+		btnCorner.Parent = btn
+
+		btn.MouseButton1Click:Connect(function()
+			if name == "All Tools" then
+				selectedToolName = "All"
+			else
+				selectedToolName = name
+				unequipAllTools()
+			end
+			refreshDropdownList()
+		end)
+	end
+end
+
+local function toggleDropdown()
+	menuOpen = not menuOpen
+
+	if menuOpen then
+		refreshDropdownList()
+		DropdownFrame.Visible = true
+		DropdownFrame.Size = UDim2.new(1, 0, 0, 0)
+		DropdownFrame.BackgroundTransparency = 1
+
+		local buttonCount = #ScrollFrame:GetChildren() - 1
+		local calculatedHeight = math.clamp(buttonCount * 29 + 8, 35, 140)
+
+		DropdownArrowBtn.Text = "^"
+
+		local tweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+		TweenService:Create(DropdownFrame, tweenInfo, {
+			Size = UDim2.new(1, 0, 0, calculatedHeight),
+			BackgroundTransparency = 0
+		}):Play()
+	else
+		DropdownArrowBtn.Text = "v"
+		local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+		local tween = TweenService:Create(DropdownFrame, tweenInfo, {
+			Size = UDim2.new(1, 0, 0, 0),
+			BackgroundTransparency = 1
+		})
+		tween:Play()
+		tween.Completed:Connect(function()
+			if not menuOpen then
+				DropdownFrame.Visible = false
+			end
+		end)
+	end
+end
+
+DropdownArrowBtn.MouseButton1Click:Connect(toggleDropdown)
+
+player.CharacterAdded:Connect(function(newChar)
+	if active then
+		newChar:WaitForChild("HumanoidRootPart", 5)
+		if loopConn then loopConn:Disconnect() end
+		loopConn = RunService.RenderStepped:Connect(equipAndActivate)
+	end
+end)
+
+ToggleBtn.MouseButton1Click:Connect(function()
+	active = not active
+
+	if active then
+		ToggleBtn.Text = "Spam tools on"
+		ToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		ToggleBtn.BackgroundColor3 = Color3.fromRGB(35, 20, 55)
+		ToggleBtn.BorderColor3 = Color3.fromRGB(200, 100, 255)
+
+		if loopConn then loopConn:Disconnect() end
+		loopConn = RunService.RenderStepped:Connect(equipAndActivate)
+	else
+		ToggleBtn.Text = "Spam tools off"
+		ToggleBtn.TextColor3 = Color3.fromRGB(220, 220, 220)
+		ToggleBtn.BackgroundColor3 = Color3.fromRGB(20, 15, 30)
+		ToggleBtn.BorderColor3 = Color3.fromRGB(160, 32, 240)
+
+		if loopConn then
+			loopConn:Disconnect()
+			loopConn = nil
+		end
+		
+		unequipAllTools()
+	end
+end)
+
+-- CONFIG
+local auraRange = 50 -- Max distance to enemy
+local auraSize = Vector3.new(50, 50, 50) -- Aura box around tool
+local attackRate = 0.0001 -- Speed of the loop (seconds)
+
+-- SERVICES
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+
+-- STATE
+local running = true
+local auraParams = OverlapParams.new()
+auraParams.FilterType = Enum.RaycastFilterType.Include
+
+-- HELPERS
+local function getChar(plr)
+    return plr and plr.Character
+end
+
+local function getHRP(plr)
+    local char = getChar(plr)
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getValidTargets()
+    local myHRP = getHRP(LocalPlayer)
+    if not myHRP then return {}, {} end
+
+    local playersInRange = {}
+    local chars = {}
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local hrp = getHRP(player)
+            if hrp and (hrp.Position - myHRP.Position).Magnitude <= auraRange then
+                table.insert(playersInRange, player)
+                local char = getChar(player)
+                if char then table.insert(chars, char) end
+            end
+        end
+    end
+
+    return playersInRange, chars
+end
+
+local function getTouchPart(tool)
+    local touchTransmitter = tool and tool:FindFirstChildWhichIsA("TouchTransmitter", true)
+    return touchTransmitter and touchTransmitter.Parent
+end
+
+local function autoEquip(tool)
+    if not tool:IsDescendantOf(workspace) then
+        tool.Parent = getChar(LocalPlayer)
+    end
+    tool:Activate()
+end
+
+-- MAIN LOOP
+task.spawn(function()
+    while running do
+        local myChar = getChar(LocalPlayer)
+        if not myChar then task.wait(1) continue end
+
+        local targets, enemyChars = getValidTargets()
+        auraParams.FilterDescendantsInstances = enemyChars
+
+        for _, tool in ipairs(myChar:GetChildren()) do
+            if tool:IsA("Tool") then
+                local fightEvent = tool:FindFirstChild("FightEvent")
+                local touchPart = getTouchPart(tool)
+
+                if fightEvent then
+                    autoEquip(tool)
+                    fightEvent:FireServer()
+                end
+
+                if touchPart then
+                    local partsInBox = workspace:GetPartBoundsInBox(
+                        touchPart.CFrame,
+                        touchPart.Size + auraSize,
+                        auraParams
+                    )
+
+                    for _, part in ipairs(partsInBox) do
+                        local model = part:FindFirstAncestorWhichIsA("Model")
+                        if model and table.find(enemyChars, model) then
+                            firetouchinterest(touchPart, part, 1)
+                            firetouchinterest(touchPart, part, 0)
+                        end
+                    end
+                end
+            end
+        end
+
+        task.wait(attackRate)
+    end
+end)
+
+-- RESET ON DEATH
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.1)
+    running = true
+end)
+
+print("1 Shot Ultra Hit Spammer Activated!")
