@@ -1,1 +1,670 @@
-4
+-- Azan Tool Grabber V7
+-- Allowed-base GearGiver1 grabber with faster respawn bursts and lower idle cost.
+
+---------------------------------------------------
+-- SERVICES
+---------------------------------------------------
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+local Tycoons = workspace:WaitForChild("Tycoons", 10)
+
+if not Tycoons then
+	warn("[AzanToolGrabber] workspace.Tycoons was not found.")
+	return
+end
+
+---------------------------------------------------
+-- CONFIG
+---------------------------------------------------
+
+local TOUCH_BURST = 2
+local SPAWN_TOUCH_BURST = 5
+local PAD_RANGE = 10000
+
+local IDLE_CHECK_INTERVAL = 0.45
+local QUICK_RECHECK_DELAY = 0.02
+local SPAWN_FORCE_TIME = 1.6
+local SPAWN_FORCE_ALL_TIME = 0.55
+local INSTANT_RESPAWN_WINDOW = 1.45
+local SPAWN_BURST_DELAYS = { 0, 0.001}
+local QUICK_BURST_DELAYS = { 0, 0.025}
+
+local ALLOWED_BASE_ORDER = {
+	"Stone",
+	"Magic",
+	"Storm",
+	"Robotic",
+	"Mecha",
+	"Shadow",
+	"Hyper",
+	"Thunder",
+	"Void",
+	"Frozen",
+	"Magma",
+	"Nuclear",
+	"Toxic",
+	"Kong",
+}
+
+local BASE_ALIASES = {
+	Stone = { "Stone"},
+	Magic = { "Magic"},
+	Storm = { "Storm"},
+	Robotic = { "Robotic"},
+	Mecha = { "Mecha"},
+	Shadow = { "Shadow"},
+	Hyper = { "Hyper"},
+	Thunder = { "Thunder"},
+	Void = { "Void"},
+	Frozen = { "Frozen"},
+	Magma = { "Magma"},
+	Nuclear = { "Nuclear"},
+	Toxic = { "Toxic"},
+	Kong = { "Kong"}
+
+}
+
+local TOOL_RULES = {
+	{ Pattern = "Energy Sword", Base = "Stone" },
+	{ Pattern = "Staff", Base = "Magic" },
+	{ Pattern = "Axe", Base = "Storm" },
+	{ Pattern = "Fists", Base = "Robotic", ForceBase = true },
+	-- MPT
+	{ Pattern = "Frozen Claws", Base = "Frozen" },
+	{ Pattern = "Nuclear Claws", Base = "Nuclear" },
+	{ Pattern = "Hyper Claws", Base = "Hyper" },
+	{ Pattern = "Thunder Claws", Base = "Thunder" },
+	{ Pattern = "Toxic Claws", Base = "Toxic" },
+	{ Pattern = "Shadow Claws", Base = "Shadow" },
+	{ Pattern = "Void Claws", Base = "Void" },
+	{ Pattern = "Magma Claws", Base = "Magma" },
+	{ Pattern = "Punch", Base = "Kong" },
+	{ Pattern = "Blade Arms", Base = "Mecha" },
+}
+
+local FORCED_BASE_TOUCHES = {
+	Robotic = 4
+}
+
+---------------------------------------------------
+-- SINGLE INSTANCE CLEANUP
+---------------------------------------------------
+
+if _G.__AzanToolGrabberCleanup then
+	pcall(_G.__AzanToolGrabberCleanup)
+end
+
+local alive = true
+local connections = {}
+local characterConnections = {}
+
+local function disconnectList(list)
+	for _, conn in ipairs(list) do
+		if conn and conn.Connected then
+			conn:Disconnect()
+		end
+	end
+	table.clear(list)
+end
+
+local function track(conn)
+	table.insert(connections, conn)
+	return conn
+end
+
+local function trackCharacter(conn)
+	table.insert(characterConnections, conn)
+	return conn
+end
+
+local function cleanup()
+	alive = false
+	disconnectList(connections)
+	disconnectList(characterConnections)
+	if _G.AzanToolGrabber then
+		_G.AzanToolGrabber = nil
+	end
+end
+
+_G.__AzanToolGrabberCleanup = cleanup
+
+---------------------------------------------------
+-- STATE
+---------------------------------------------------
+
+local padsByBase = {}
+local registeredPads = {}
+local currentCharacter = nil
+local currentRoot = nil
+local warnedMissingTouch = false
+
+local acquireRunning = false
+local acquireQueued = false
+local scheduleSerial = 0
+local lifeSerial = 0
+local instantBurstSerial = 0
+local forceAllUntil = 0
+local baseForceUntil = {}
+local baseTouchCounts = {}
+
+for _, baseName in ipairs(ALLOWED_BASE_ORDER) do
+	padsByBase[baseName] = {}
+end
+
+---------------------------------------------------
+-- BASE / PAD DISCOVERY
+---------------------------------------------------
+
+local function normalizeName(value)
+	return tostring(value or ""):lower():gsub("[^%w]", "")
+end
+
+local function allowedBaseFromName(name)
+	local normalized = normalizeName(name)
+
+	for baseName, aliases in pairs(BASE_ALIASES) do
+		for _, alias in ipairs(aliases) do
+			local normalizedAlias = normalizeName(alias)
+			if normalized == normalizedAlias or normalized:find(normalizedAlias, 1, true) then
+				return baseName
+			end
+		end
+	end
+
+	return nil
+end
+
+local function findGearGiver1Ancestor(instance)
+	local node = instance
+
+	while node and node ~= Tycoons do
+		if node.Name == "GearGiver1" then
+			return node
+		end
+		node = node.Parent
+	end
+
+	return nil
+end
+
+local function findAllowedBaseAncestor(instance)
+	local node = instance
+
+	while node and node ~= Tycoons do
+		local baseName = allowedBaseFromName(node.Name)
+		if baseName then
+			return baseName, node
+		end
+		node = node.Parent
+	end
+
+	return nil, nil
+end
+
+local function hasTouchTransmitter(part)
+	return part and part:IsA("BasePart") and part:FindFirstChildOfClass("TouchTransmitter") ~= nil
+end
+
+local function registerPad(part)
+	if not alive then return end
+	if not hasTouchTransmitter(part) then return end
+
+	local giver = findGearGiver1Ancestor(part)
+	if not giver then return end
+
+	local baseName = findAllowedBaseAncestor(giver.Parent)
+	if not baseName then return end
+
+	if registeredPads[part] == baseName then
+		return
+	end
+
+	if registeredPads[part] and registeredPads[part] ~= baseName then
+		local oldPads = padsByBase[registeredPads[part]]
+		if oldPads then
+			for i = #oldPads, 1, -1 do
+				if oldPads[i] == part then
+					table.remove(oldPads, i)
+				end
+			end
+		end
+	end
+
+	registeredPads[part] = baseName
+	table.insert(padsByBase[baseName], part)
+end
+
+local function scanTycoons()
+	for _, obj in ipairs(Tycoons:GetDescendants()) do
+		if obj:IsA("BasePart") then
+			registerPad(obj)
+		end
+	end
+end
+
+scanTycoons()
+
+track(Tycoons.DescendantAdded:Connect(function(obj)
+	if obj:IsA("BasePart") then
+		task.defer(registerPad, obj)
+	elseif obj:IsA("TouchTransmitter") and obj.Parent and obj.Parent:IsA("BasePart") then
+		registerPad(obj.Parent)
+	end
+end))
+
+for base, pads in pairs(padsByBase) do
+    print(base, #pads)
+end
+
+---------------------------------------------------
+-- TOOL CHECKS
+---------------------------------------------------
+
+local function toolMatches(tool, pattern)
+	if not tool or not tool:IsA("Tool") then return false end
+	return normalizeName(tool.Name):find(normalizeName(pattern), 1, true) ~= nil
+end
+
+local function hasTool(pattern)
+	local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+
+	if backpack then
+		for _, item in ipairs(backpack:GetChildren()) do
+			if toolMatches(item, pattern) then
+				return true
+			end
+		end
+	end
+
+	local character = currentCharacter
+	if character then
+		for _, item in ipairs(character:GetChildren()) do
+			if toolMatches(item, pattern) then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
+---------------------------------------------------
+-- PAD PICKING
+---------------------------------------------------
+
+local ROOT_PRIORITY = {
+	"HumanoidRootPart",
+	"UpperTorso",
+	"Torso",
+	"LowerTorso",
+	"Head"
+}
+
+local function findUsableRoot(character)
+	if not character then return nil end
+
+	for _, name in ipairs(ROOT_PRIORITY) do
+		local part = character:FindFirstChild(name)
+		if part and part:IsA("BasePart") then
+			return part
+		end
+	end
+
+	for _, child in ipairs(character:GetChildren()) do
+		if child:IsA("BasePart") then
+			return child
+		end
+	end
+
+	return nil
+end
+
+local function getRoot()
+	if currentRoot and currentRoot.Parent then
+		return currentRoot
+	end
+
+	local character = currentCharacter or LocalPlayer.Character
+	if not character then return nil end
+
+	currentRoot = findUsableRoot(character)
+	return currentRoot
+end
+
+local function prunePadList(baseName)
+	local pads = padsByBase[baseName]
+	if not pads then return nil end
+
+	for i = #pads, 1, -1 do
+		local pad = pads[i]
+		if not pad or not pad.Parent or registeredPads[pad] ~= baseName then
+			if pad then
+				registeredPads[pad] = nil
+			end
+			table.remove(pads, i)
+		end
+	end
+
+	return pads
+end
+
+local function getClosestPad(baseName)
+	local root = getRoot()
+	if not root then return nil end
+
+	local pads = prunePadList(baseName)
+	if not pads or #pads == 0 then return nil end
+
+	local closest = nil
+	local bestDistance = PAD_RANGE
+
+	for _, pad in ipairs(pads) do
+		local distance = (pad.Position - root.Position).Magnitude
+		if distance < bestDistance then
+			bestDistance = distance
+			closest = pad
+		end
+	end
+
+	return closest
+end
+
+---------------------------------------------------
+-- TOUCH ENGINE
+---------------------------------------------------
+
+local function tapPad(root, pad, baseName, burstCount)
+	if type(firetouchinterest) ~= "function" then
+		if not warnedMissingTouch then
+			warn("[AzanToolGrabber] firetouchinterest is not available in this executor.")
+			warnedMissingTouch = true
+		end
+		return
+	end
+
+	if not root or not root.Parent or not pad or not pad.Parent then
+		return
+	end
+
+	burstCount = burstCount or TOUCH_BURST
+
+	print("Touching:", baseName, pad:GetFullName())
+
+	local touch = firetouchinterest
+	pcall(function()
+		for _ = 1, burstCount do
+			touch(root, pad, 0)
+			touch(root, pad, 1)
+		end
+	end)
+
+	baseTouchCounts[baseName] = (baseTouchCounts[baseName] or 0) + 1
+end
+
+---------------------------------------------------
+-- WAVE BUILDER
+---------------------------------------------------
+
+local function shouldForceBase(rule, now)
+	if not rule.ForceBase then
+		return false
+	end
+
+	local requiredTouches = FORCED_BASE_TOUCHES[rule.Base] or 0
+	local touchCount = baseTouchCounts[rule.Base] or 0
+	local forceUntil = baseForceUntil[rule.Base] or 0
+
+	return touchCount < requiredTouches or now <= forceUntil
+end
+
+local function addWavePad(wave, seenPads, baseName)
+	local pad = getClosestPad(baseName)
+	if pad and not seenPads[pad] then
+		seenPads[pad] = true
+		table.insert(wave, {
+			Pad = pad,
+			Base = baseName
+		})
+	end
+end
+
+local function buildWave()
+	local wave = {}
+	local seenPads = {}
+	local now = os.clock()
+
+	if now <= forceAllUntil then
+		for _, baseName in ipairs(ALLOWED_BASE_ORDER) do
+			addWavePad(wave, seenPads, baseName)
+		end
+
+		return wave
+	end
+
+	for _, rule in ipairs(TOOL_RULES) do
+	
+	local forced = shouldForceBase(rule, now)
+		if forced or not hasTool(rule.Pattern) then
+				addWavePad(wave, seenPads, rule.Base)
+		end
+	end
+
+	return wave
+end
+
+---------------------------------------------------
+-- ACQUISITION ENGINE
+---------------------------------------------------
+
+local function acquirePass(reason, spawnBurst)
+	if not alive then return end
+
+	if acquireRunning then
+		acquireQueued = true
+		return
+	end
+
+	acquireRunning = true
+
+	local root = getRoot()
+	local wave = {}
+
+	if root then
+		wave = buildWave()
+		local burstCount = spawnBurst and SPAWN_TOUCH_BURST or TOUCH_BURST
+
+		for _, entry in ipairs(wave) do
+			tapPad(root, entry.Pad, entry.Base, burstCount)
+		end
+		print("Wave Size:", #wave)
+		print("Root:", root and root.Name)
+	end
+
+	acquireRunning = false
+
+	if acquireQueued then
+		acquireQueued = false
+		task.defer(acquirePass, "queued", false)
+	end
+end
+
+local function scheduleAcquire(reason, spawnBurst)
+	scheduleSerial = scheduleSerial + 1
+	local mySerial = scheduleSerial
+	local delays = spawnBurst and SPAWN_BURST_DELAYS or QUICK_BURST_DELAYS
+
+	for _, delayTime in ipairs(delays) do
+		if delayTime <= 0 then
+			acquirePass(reason, spawnBurst)
+		else
+			task.delay(delayTime, function()
+				if alive and (spawnBurst or mySerial == scheduleSerial) then
+					acquirePass(reason, spawnBurst)
+				end
+			end)
+		end
+	end
+end
+
+local function runInstantRespawnBurst(reason, character)
+	instantBurstSerial += 1
+	local mySerial = instantBurstSerial
+	local started = os.clock()
+
+	task.spawn(function()
+		while alive and mySerial == instantBurstSerial and os.clock() - started <= INSTANT_RESPAWN_WINDOW do
+			local char = character or currentCharacter or LocalPlayer.Character
+
+			if char and char.Parent then
+				local root = findUsableRoot(char)
+				if root then
+					currentCharacter = char
+					currentRoot = root
+					acquirePass(reason or "instant-respawn", true)
+				end
+			end
+
+			RunService.Heartbeat:Wait()
+		end
+	end)
+end
+
+---------------------------------------------------
+-- CHARACTER / BACKPACK TRACKING
+---------------------------------------------------
+
+local function resetForcedBases()
+	table.clear(baseTouchCounts)
+	table.clear(baseForceUntil)
+
+	local now = os.clock()
+	forceAllUntil = now + SPAWN_FORCE_ALL_TIME
+	for baseName in pairs(FORCED_BASE_TOUCHES) do
+		baseForceUntil[baseName] = now + SPAWN_FORCE_TIME
+	end
+end
+
+local function bindCharacter(character)
+	disconnectList(characterConnections)
+
+	currentCharacter = character
+	currentRoot = nil
+	lifeSerial = lifeSerial + 1
+	resetForcedBases()
+
+	if not character then return end
+
+	runInstantRespawnBurst("character-added", character)
+
+	trackCharacter(character.ChildAdded:Connect(function(child)
+		if child:IsA("BasePart") then
+			currentRoot = child
+			acquirePass("part-added", true)
+			scheduleAcquire("root-added", true)
+		elseif child:IsA("Tool") then
+			scheduleAcquire("character-tool-change", false)
+		end
+	end))
+
+	trackCharacter(character.ChildRemoved:Connect(function(child)
+		if child == currentRoot then
+			currentRoot = nil
+		elseif child:IsA("Tool") then
+			task.delay(QUICK_RECHECK_DELAY, function()
+				scheduleAcquire("character-tool-removed", false)
+			end)
+		end
+	end))
+
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		root = findUsableRoot(character)
+	end
+
+	if root then
+		currentRoot = root
+		acquirePass("spawn-immediate", true)
+		scheduleAcquire("spawn", true)
+	else
+		local myLife = lifeSerial
+		task.defer(function()
+			if not alive or myLife ~= lifeSerial then return end
+			local waitedRoot = character:WaitForChild("HumanoidRootPart", 5)
+			if waitedRoot then
+				currentRoot = waitedRoot
+				acquirePass("spawn-waited-immediate", true)
+				scheduleAcquire("spawn-waited", true)
+			end
+		end)
+	end
+end
+
+local function bindBackpack()
+	local backpack = LocalPlayer:FindFirstChildOfClass("Backpack") or LocalPlayer:WaitForChild("Backpack", 5)
+	if not backpack then return end
+
+	track(backpack.ChildAdded:Connect(function(child)
+		if child:IsA("Tool") then
+			scheduleAcquire("backpack-tool-change", false)
+		end
+	end))
+
+	track(backpack.ChildRemoved:Connect(function(child)
+		if child:IsA("Tool") then
+			task.delay(QUICK_RECHECK_DELAY, function()
+				scheduleAcquire("backpack-tool-removed", false)
+			end)
+		end
+	end))
+end
+
+track(LocalPlayer.CharacterAdded:Connect(bindCharacter))
+track(LocalPlayer.CharacterRemoving:Connect(function(character)
+	if character == currentCharacter then
+		currentCharacter = nil
+		currentRoot = nil
+		resetForcedBases()
+	end
+end))
+
+bindBackpack()
+
+if LocalPlayer.Character then
+	bindCharacter(LocalPlayer.Character)
+else
+	resetForcedBases()
+end
+
+---------------------------------------------------
+-- LOW-COST IDLE SAFETY LOOP
+---------------------------------------------------
+
+task.spawn(function()
+	while alive do
+		task.wait(IDLE_CHECK_INTERVAL)
+		acquirePass("idle", false)
+	end
+end)
+
+scheduleAcquire("startup", true)
+
+_G.AzanToolGrabber = {
+	Acquire = function()
+		acquirePass("api-acquire", true)
+	end,
+	Burst = function()
+		resetForcedBases()
+		runInstantRespawnBurst("api-burst", LocalPlayer.Character)
+		scheduleAcquire("api-burst", true)
+	end,
+	Config = {
+		TouchBurst = TOUCH_BURST,
+		SpawnTouchBurst = SPAWN_TOUCH_BURST,
+		InstantWindow = INSTANT_RESPAWN_WINDOW
+	}
+}
+
+print("[AzanToolGrabber] V8 Loaded - instant respawn burst + allowed GearGiver1 pads")
