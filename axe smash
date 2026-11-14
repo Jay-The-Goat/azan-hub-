@@ -1,0 +1,453 @@
+-- Azan Axe Smash V1
+-- Modern Azan Hub UI Foundation
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+
+--------------------------------------------------
+-- CONFIG
+--------------------------------------------------
+
+local TOOL_NAME = "Axe Smash"
+local REMOTE_NAME = "Remote"
+
+local CONFIG = {
+	Enabled = false,
+	APS = 80,
+	ToggleKey = Enum.KeyCode.X
+}
+
+local PRESETS = {
+	{ Name = "SAFE", APS = 35 },
+	{ Name = "FAST", APS = 80 },
+	{ Name = "MAX", APS = 150 }
+}
+
+local CurrentPreset = 2
+
+--------------------------------------------------
+-- THEME
+--------------------------------------------------
+
+local THEME = {
+	Accent = Color3.fromRGB(255,0,0),
+	Panel = Color3.fromRGB(18,18,24),
+	Background = Color3.fromRGB(8,8,12),
+	Button = Color3.fromRGB(0,0,0),
+	Text = Color3.fromRGB(255,0,0),
+	Muted = Color3.fromRGB(170,170,180),
+	On = Color3.fromRGB(35,0,0)
+}
+
+local TWEEN_FAST =
+	TweenInfo.new(
+		0.16,
+		Enum.EasingStyle.Quad,
+		Enum.EasingDirection.Out
+	)
+
+--------------------------------------------------
+-- CLEANUP
+--------------------------------------------------
+
+if _G.__AzanAxeCleanup then
+	pcall(_G.__AzanAxeCleanup)
+end
+
+local Alive = true
+local Connections = {}
+local Gui
+
+local function Track(c)
+	table.insert(Connections,c)
+	return c
+end
+
+local function Cleanup()
+	Alive = false
+
+	for _,c in ipairs(Connections) do
+		if c and c.Connected then
+			c:Disconnect()
+		end
+	end
+
+	table.clear(Connections)
+
+	if Gui then
+		pcall(function()
+			Gui:Destroy()
+		end)
+	end
+end
+
+_G.__AzanAxeCleanup = Cleanup
+
+--------------------------------------------------
+-- HELPERS
+--------------------------------------------------
+
+local function Round(obj,r)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0,r or 8)
+	c.Parent = obj
+end
+
+local function Stroke(obj,t,a)
+	local s = Instance.new("UIStroke")
+	s.Color = THEME.Accent
+	s.Thickness = t or 1
+	s.Transparency = a or 0
+	s.Parent = obj
+	return s
+end
+
+local function FindTool()
+	local char = LocalPlayer.Character
+
+	if char then
+		local t = char:FindFirstChild(TOOL_NAME)
+		if t then return t end
+	end
+
+	local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+
+	if bp then
+		local t = bp:FindFirstChild(TOOL_NAME)
+		if t then return t end
+	end
+
+	return nil
+end
+
+local function FindRemote()
+	local tool = FindTool()
+
+	if not tool then
+		return nil
+	end
+
+	return tool:FindFirstChild(REMOTE_NAME)
+end
+
+--------------------------------------------------
+-- FIRING ENGINE
+--------------------------------------------------
+
+local Tokens = 0
+local FireCount = 0
+
+local function FireRemote()
+	local remote = FindRemote()
+
+	if not remote then
+		return
+	end
+
+	local hit = Mouse.Hit
+
+	pcall(function()
+		remote:FireServer(hit)
+	end)
+
+	FireCount += 1
+end
+
+--------------------------------------------------
+-- GUI
+--------------------------------------------------
+
+local Old = CoreGui:FindFirstChild("AzanAxeSmash")
+
+if Old then
+	Old:Destroy()
+end
+
+Gui = Instance.new("ScreenGui")
+Gui.Name = "AzanAxeSmash"
+Gui.ResetOnSpawn = false
+Gui.Parent = CoreGui
+
+local Panel = Instance.new("Frame")
+Panel.Size = UDim2.fromOffset(260,150)
+Panel.Position = UDim2.fromScale(.98,.50)
+Panel.AnchorPoint = Vector2.new(1,.5)
+Panel.BackgroundColor3 = THEME.Panel
+Panel.BorderSizePixel = 0
+Panel.Active = true
+Panel.Draggable = true
+Panel.Parent = Gui
+
+Round(Panel,12)
+Stroke(Panel,1.5,0)
+
+local Glow = Instance.new("UIStroke")
+Glow.Color = THEME.Accent
+Glow.Thickness = 5
+Glow.Transparency = .7
+Glow.Parent = Panel
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1,-20,0,24)
+Title.Position = UDim2.new(0,10,0,8)
+Title.BackgroundTransparency = 1
+Title.Font = Enum.Font.Code
+Title.TextSize = 17
+Title.TextColor3 = THEME.Text
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Text = "Azan AXE SMASH"
+Title.Parent = Panel
+
+local Status = Instance.new("TextLabel")
+Status.Size = UDim2.new(1,-20,0,18)
+Status.Position = UDim2.new(0,10,0,30)
+Status.BackgroundTransparency = 1
+Status.Font = Enum.Font.Code
+Status.TextSize = 12
+Status.TextColor3 = THEME.Muted
+Status.TextXAlignment = Enum.TextXAlignment.Left
+Status.Parent = Panel
+
+local Toggle = Instance.new("TextButton")
+Toggle.Size = UDim2.new(1,-20,0,32)
+Toggle.Position = UDim2.new(0,10,0,52)
+Toggle.BackgroundColor3 = THEME.Button
+Toggle.TextColor3 = THEME.Text
+Toggle.Font = Enum.Font.Code
+Toggle.TextSize = 15
+Toggle.Parent = Panel
+
+Round(Toggle,9)
+Stroke(Toggle,1,.2)
+
+local Stats = Instance.new("Frame")
+Stats.Size = UDim2.new(1,-20,0,24)
+Stats.Position = UDim2.new(0,10,0,92)
+Stats.BackgroundTransparency = 1
+Stats.Parent = Panel
+
+local Layout = Instance.new("UIListLayout")
+Layout.FillDirection = Enum.FillDirection.Horizontal
+Layout.Padding = UDim.new(0,6)
+Layout.Parent = Stats
+
+local function MakeLabel(width)
+
+	local L = Instance.new("TextLabel")
+	L.Size = UDim2.new(0,width,1,0)
+	L.BackgroundColor3 = THEME.Background
+	L.TextColor3 = THEME.Muted
+	L.Font = Enum.Font.Code
+	L.TextSize = 11
+	L.Parent = Stats
+
+	Round(L,7)
+	Stroke(L,1,.5)
+
+	return L
+end
+
+local APSLabel = MakeLabel(70)
+local FiresLabel = MakeLabel(80)
+local ToolLabel = MakeLabel(84)
+
+local Controls = Instance.new("Frame")
+Controls.Size = UDim2.new(1,-20,0,24)
+Controls.Position = UDim2.new(0,10,0,122)
+Controls.BackgroundTransparency = 1
+Controls.Parent = Panel
+
+local CL = Instance.new("UIListLayout")
+CL.FillDirection = Enum.FillDirection.Horizontal
+CL.Padding = UDim.new(0,6)
+CL.Parent = Controls
+
+local function MakeButton(text,width)
+
+	local B = Instance.new("TextButton")
+	B.Size = UDim2.new(0,width,1,0)
+	B.BackgroundColor3 = THEME.Button
+	B.TextColor3 = THEME.Text
+	B.Font = Enum.Font.Code
+	B.TextSize = 12
+	B.Text = text
+	B.Parent = Controls
+
+	Round(B,7)
+	Stroke(B,1,.35)
+
+	return B
+end
+
+local Minus = MakeButton("- APS",70)
+local Plus = MakeButton("+ APS",70)
+local Mode = MakeButton("MODE",84)
+
+--------------------------------------------------
+-- UI UPDATE
+--------------------------------------------------
+
+local function UpdateUI()
+
+	local tool = FindTool()
+	local remote = FindRemote()
+
+	Toggle.Text =
+		CONFIG.Enabled and
+		"AXE SMASH: ON" or
+		"AXE SMASH: OFF"
+
+	Status.Text =
+		(tool and remote)
+		and "READY"
+		or "TOOL OR REMOTE MISSING"
+
+	APSLabel.Text =
+		"APS "..CONFIG.APS
+
+	FiresLabel.Text =
+		"Fires "..FireCount
+
+	ToolLabel.Text =
+		tool and "FOUND"
+		or "MISSING"
+
+	if CONFIG.Enabled then
+		TweenService:Create(
+			Toggle,
+			TWEEN_FAST,
+			{BackgroundColor3 = THEME.On}
+		):Play()
+
+		Glow.Transparency = .45
+	else
+		TweenService:Create(
+			Toggle,
+			TWEEN_FAST,
+			{BackgroundColor3 = THEME.Button}
+		):Play()
+
+		Glow.Transparency = .72
+	end
+
+	Mode.Text =
+		"MODE "..PRESETS[CurrentPreset].Name
+end
+
+--------------------------------------------------
+-- BUTTONS
+--------------------------------------------------
+
+Toggle.MouseButton1Click:Connect(function()
+
+	CONFIG.Enabled =
+		not CONFIG.Enabled
+
+	UpdateUI()
+
+end)
+
+Minus.MouseButton1Click:Connect(function()
+
+	CONFIG.APS =
+		math.max(
+			10,
+			CONFIG.APS - 10
+		)
+
+	UpdateUI()
+
+end)
+
+Plus.MouseButton1Click:Connect(function()
+
+	CONFIG.APS =
+		math.min(
+			300,
+			CONFIG.APS + 10
+		)
+
+	UpdateUI()
+
+end)
+
+Mode.MouseButton1Click:Connect(function()
+
+	CurrentPreset += 1
+
+	if CurrentPreset > #PRESETS then
+		CurrentPreset = 1
+	end
+
+	CONFIG.APS =
+		PRESETS[CurrentPreset].APS
+
+	UpdateUI()
+
+end)
+
+--------------------------------------------------
+-- KEYBIND
+--------------------------------------------------
+
+Track(
+	UserInputService.InputBegan:Connect(
+		function(input,gp)
+
+			if gp then
+				return
+			end
+
+			if input.KeyCode ==
+				CONFIG.ToggleKey
+			then
+
+				CONFIG.Enabled =
+					not CONFIG.Enabled
+
+				UpdateUI()
+
+			end
+		end
+	)
+)
+
+--------------------------------------------------
+-- MAIN LOOP
+--------------------------------------------------
+
+Track(
+	RunService.Heartbeat:Connect(
+		function(dt)
+
+			if not CONFIG.Enabled then
+				return
+			end
+
+			Tokens += dt * CONFIG.APS
+
+			local count = math.floor(Tokens)
+
+			if count <= 0 then
+				return
+			end
+
+			Tokens -= count
+
+			for i=1,count do
+				FireRemote()
+			end
+
+		end
+	)
+)
+
+UpdateUI()
+
+print("[Azan Axe Smash] Loaded")
